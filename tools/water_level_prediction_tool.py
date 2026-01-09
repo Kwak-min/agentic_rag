@@ -1,0 +1,544 @@
+# tools/water_level_prediction_tool.py
+
+import numpy as np
+import tensorflow as tf
+from typing import Dict
+from utils.logger import setup_logger
+from utils.helpers import extract_float_numbers, parse_time_info_from_text
+import os
+
+logger = setup_logger(__name__)
+
+class WaterLevelPredictionTool:
+    """LSTM 모델을 사용한 수위 예측 도구"""
+    
+    def __init__(self):
+        """수위 예측 도구 초기화"""
+        self.name = "water_level_prediction_tool"
+        self.description = "LSTM 모델을 사용하여 수위를 예측합니다. 과거 수위 데이터를 입력받아 미래 수위를 예측합니다."
+        self.model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lstm_model', 'lstm_water_level_model.h5')
+        self.model = None
+        # Lazy loading: 최초 사용 시 로드
+    
+    def _load_model(self):
+        """LSTM 모델 로드"""
+        try:
+            if os.path.exists(self.model_path):
+                self.model = tf.keras.models.load_model(self.model_path)
+                logger.info(f"LSTM 모델 로드 완료: {self.model_path}")
+            else:
+                logger.error(f"모델 파일을 찾을 수 없습니다: {self.model_path}")
+        except Exception as e:
+            logger.error(f"모델 로드 실패: {str(e)}")
+
+    def _ensure_model_loaded(self):
+        """모델이 로드되어 있지 않으면 로드한다."""
+        if self.model is None:
+            self._load_model()
+    
+    def _convert_and_validate_data(self, data):
+        """데이터를 수위 리스트로 변환 및 검증"""
+        if data is None:
+            return None
+        
+        try:
+            # 이미 리스트인 경우
+            if isinstance(data, list):
+                # 중첩 리스트 평면화
+                if any(isinstance(item, (list, tuple)) for item in data):
+                    flattened = []
+                    for item in data:
+                        if isinstance(item, (list, tuple)):
+                            flattened.extend(item)
+                        else:
+                            flattened.append(item)
+                    data = flattened
+                
+                # 숫자 변환
+                converted = []
+                for item in data:
+                    if isinstance(item, (int, float)):
+                        converted.append(float(item))
+                    elif isinstance(item, str):
+                        # 문자열에서 숫자 추출
+                        try:
+                            converted.append(float(item.strip()))
+                        except ValueError:
+                            # 문자열에서 숫자만 추출 시도
+                            import re
+                            numbers = re.findall(r'-?\d+\.?\d*', item)
+                            if numbers:
+                                converted.append(float(numbers[0]))
+                            else:
+                                logger.warning(f"숫자로 변환할 수 없는 항목 무시: {item}")
+                                continue
+                    else:
+                        logger.warning(f"지원되지 않는 데이터 타입 무시: {type(item)} - {item}")
+                        continue
+                
+                return converted if converted else None
+            
+            # 문자열인 경우 (JSON 형태 가능)
+            elif isinstance(data, str):
+                import json
+                try:
+                    # JSON 파싱 시도
+                    parsed = json.loads(data)
+                    if isinstance(parsed, list):
+                        return self._convert_and_validate_data(parsed)
+                except json.JSONDecodeError:
+                    pass
+
+                # 문자열에서 숫자 추출 (필터 없이 전부)
+                numbers = extract_float_numbers(data)
+                return numbers if numbers else None
+            
+            # 단일 숫자인 경우
+            elif isinstance(data, (int, float)):
+                return [float(data)]
+            
+            # 다른 반복 가능한 객체인 경우
+            elif hasattr(data, '__iter__'):
+                return self._convert_and_validate_data(list(data))
+            
+            else:
+                logger.warning(f"지원되지 않는 데이터 타입: {type(data)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"데이터 변환 중 오류: {str(e)}")
+            return None
+    
+    def _clean_data(self, data):
+        """데이터 품질 검증 및 정제"""
+        if not data:
+            return data
+        
+        cleaned = []
+        for item in data:
+            # 이상치 제거 (너무 큰 값이나 작은 값)
+            if isinstance(item, (int, float)):
+                if -10000 <= item <= 10000:  # 수위 범위 제한
+                    cleaned.append(item)
+                else:
+                    logger.warning(f"이상치 제거: {item}")
+            else:
+                logger.warning(f"숫자가 아닌 데이터 제거: {item}")
+        
+        # 중복 제거 (연속된 동일한 값 제한)
+        if len(cleaned) > 1:
+            final_cleaned = [cleaned[0]]
+            consecutive_count = 1
+            
+            for i in range(1, len(cleaned)):
+                if cleaned[i] == cleaned[i-1]:
+                    consecutive_count += 1
+                    if consecutive_count <= 5:  # 연속 5개까지만 허용
+                        final_cleaned.append(cleaned[i])
+                else:
+                    consecutive_count = 1
+                    final_cleaned.append(cleaned[i])
+            
+            cleaned = final_cleaned
+        
+        logger.info(f"데이터 정제 완료: {len(data)} → {len(cleaned)}개")
+        return cleaned
+    
+    def _extract_data_from_context(self, kwargs):
+        """컨텍스트나 환경에서 수위 데이터 추출 (간소화)"""
+        user_query = kwargs.get('user_query') or kwargs.get('query') or kwargs.get('question')
+        if user_query:
+            logger.info(f"사용자 질문에서 데이터 추출 시도: {user_query[:100]}...")
+            return self._parse_data_from_text(user_query)
+        return None
+    
+    def _parse_data_from_text(self, text):
+        """텍스트에서 수위 데이터 파싱"""
+        if not text:
+            return None
+        
+        # 대괄호 안의 숫자 리스트 찾기
+        bracket_pattern = r'\[([^\]]+)\]'
+        import re
+        matches = re.findall(bracket_pattern, text)
+        
+        for match in matches:
+            try:
+                # 쉼표로 분리된 숫자들 추출
+                numbers = []
+                for item in match.split(','):
+                    item = item.strip()
+                    if item:
+                        numbers.append(float(item))
+                
+                if numbers and len(numbers) > 3:  # 최소 4개 이상의 데이터 포인트
+                    logger.info(f"텍스트에서 {len(numbers)}개 데이터 추출 성공")
+                    return numbers
+            except ValueError:
+                continue
+        
+        # 일반 숫자 패턴으로 추출
+        # 범위 필터 포함한 숫자 추출 (수위 합리 범위 50~150 가정)
+        numbers = extract_float_numbers(text, min_count=4, min_value=50.0, max_value=150.0)
+        if numbers:
+            logger.info(f"텍스트에서 {len(numbers)}개 수위 데이터 추출 성공")
+            return numbers
+        
+        logger.warning("텍스트에서 유효한 수위 데이터를 찾을 수 없습니다")
+        return None
+    
+    def execute(self, water_levels=None, dataPoints=None, data=None, prediction_steps=None, prediction_hours=None, time_horizon=None, query=None, analysis_type=None, **kwargs):
+        """수위 예측 실행 래퍼 (간소화)
+
+        - 지원 인자 별칭:
+          - water_levels ≡ dataPoints ≡ data
+          - prediction_steps ≡ futureTimeSteps ≡ steps
+        - 새로운 기능:
+          - query: 자연어 질의를 통한 예측 요청
+          - analysis_type: 예측 분석 유형 ('trend', 'comparison', 'alert' 등)
+        """
+        # 별칭 매핑 처리
+        if prediction_steps is None:
+            alias_steps = kwargs.get('futureTimeSteps') or kwargs.get('steps') or kwargs.get('n_steps')
+            if isinstance(alias_steps, (int, float)):
+                prediction_steps = int(alias_steps)
+
+        # 자연어 질의 처리
+        if query and not time_horizon:
+            time_horizon = parse_time_info_from_text(query)
+        
+        # 분석 유형별 특별 처리
+        if analysis_type:
+            kwargs['analysis_type'] = analysis_type
+            
+        result = self._predict_water_level(water_levels, dataPoints, data, prediction_steps, prediction_hours, time_horizon, **kwargs)
+        
+        # 분석 유형에 따른 결과 후처리
+        if analysis_type and isinstance(result, dict) and 'predictions' in result:
+            result = self._enhance_prediction_with_analysis(result, analysis_type, query)
+            
+        return result
+    
+    # 불필요한 도구 설정 스키마는 제거하여 단순화
+    
+    def _predict_water_level(self, water_levels=None, dataPoints=None, data=None, prediction_steps=None, prediction_hours=None, time_horizon=None, **kwargs):
+        """수위 예측 실행 (기존 로직)"""
+        # 매개변수 정규화
+        if water_levels is None and dataPoints is not None:
+            water_levels = dataPoints
+        elif water_levels is None and data is not None:
+            water_levels = data
+        
+        # 데이터 자동 변환 및 정제
+        water_levels = self._convert_and_validate_data(water_levels)
+        
+        # 모든 데이터가 None인 경우 사용자 질문에서 추출 시도
+        if water_levels is None:
+            user_query = kwargs.get('user_query')
+            if user_query:
+                logger.info(f"사용자 질문에서 데이터 추출 시도: {user_query[:100]}...")
+                water_levels = self._parse_data_from_text(user_query)
+            else:
+                water_levels = self._extract_data_from_context(kwargs)
+        
+        # 시간 범위 처리
+        if prediction_steps is None and time_horizon is not None:
+            if isinstance(time_horizon, dict):
+                if 'minutes' in time_horizon:
+                    # 분 단위를 시간 단위로 변환 (30분 = 0.5시간)
+                    prediction_steps = max(1, int(time_horizon['minutes'] / 60) or 1)
+                elif 'hours' in time_horizon:
+                    prediction_steps = time_horizon['hours']
+                else:
+                    prediction_steps = 1
+            else:
+                prediction_steps = 1
+        elif prediction_steps is None and prediction_hours is not None:
+            # prediction_hours가 딕셔너리 형태인 경우 처리
+            if isinstance(prediction_hours, dict) and 'value' in prediction_hours:
+                prediction_steps = prediction_hours['value']
+            elif isinstance(prediction_hours, (int, float)):
+                prediction_steps = int(prediction_hours)
+            else:
+                prediction_steps = 1
+        elif prediction_steps is None:
+            prediction_steps = 1
+            
+        logger.info(f"수위 예측 실행: {len(water_levels) if water_levels else 0}개 데이터, {prediction_steps}개 예측")
+        
+        try:
+            # Lazy load
+            self._ensure_model_loaded()
+            if self.model is None:
+                return {"error": "LSTM 모델이 로드되지 않았습니다."}
+            
+            # 데이터 변환 후 검증
+            if water_levels is None or not isinstance(water_levels, list) or len(water_levels) == 0:
+                return {"error": "수위 데이터가 유효하지 않습니다. 숫자 데이터를 입력하세요. 지원 형태: 리스트, 문자열, JSON 등"}
+            
+            # 데이터 품질 검증 및 정제
+            water_levels = self._clean_data(water_levels)
+            
+            # 입력 데이터 전처리 - 고정밀 소수점 지원
+            try:
+                # numpy array로 변환하여 고정밀 처리
+                water_array = np.array(water_levels, dtype=np.float64)
+                
+                # 모델 입력 크기 확인 (60개 시계열 데이터 필요)
+                expected_length = 60
+                if len(water_array) < expected_length:
+                    # 패딩 또는 반복으로 60개 맞추기
+                    if len(water_array) >= expected_length // 2:
+                        # 데이터가 충분히 많으면 마지막 값들을 반복
+                        pad_length = expected_length - len(water_array)
+                        last_values = np.repeat(water_array[-1], pad_length)
+                        water_array = np.concatenate([water_array, last_values])
+                    else:
+                        # 데이터가 적으면 전체를 반복
+                        repeat_times = expected_length // len(water_array) + 1
+                        water_array = np.tile(water_array, repeat_times)[:expected_length]
+                elif len(water_array) > expected_length:
+                    # 데이터가 많으면 최근 60개만 사용
+                    water_array = water_array[-expected_length:]
+                
+                # 데이터 정규화 (입력 범위 기준)
+                data_min = np.min(water_array)
+                data_max = np.max(water_array)
+                data_range = data_max - data_min
+                
+                if data_range > 0:
+                    normalized_data = (water_array - data_min) / data_range
+                else:
+                    normalized_data = water_array
+                
+                input_data = normalized_data.reshape(1, -1, 1)
+                logger.info(f"입력 데이터 형태: {input_data.shape}, 정규화 범위: {data_min:.6f} ~ {data_max:.6f}")
+                
+            except (ValueError, TypeError) as e:
+                return {"error": f"수위 데이터를 숫자로 변환할 수 없습니다: {str(e)}"}
+            
+            # 예측 실행
+            predictions = []
+            current_input = input_data
+            
+            for step in range(prediction_steps):
+                # 한 스텝 예측
+                pred = self.model.predict(current_input, verbose=0)
+                # 정규화된 결과를 원래 범위로 역정규화
+                pred_normalized = float(pred[0, 0])
+                
+                if data_range > 0:
+                    pred_value = pred_normalized * data_range + data_min
+                else:
+                    pred_value = pred_normalized
+                
+                predictions.append(pred_value)
+                logger.debug(f"예측 스텝 {step+1}: 정규화값={pred_normalized:.6f}, 실제값={pred_value:.6f}")
+                
+                # 다음 예측을 위해 입력 업데이트 (슬라이딩 윈도우)
+                if current_input.shape[1] > 1:
+                    current_input = np.concatenate([
+                        current_input[:, 1:, :],
+                        pred.reshape(1, 1, 1)
+                    ], axis=1)
+                else:
+                    current_input = pred.reshape(1, 1, 1)
+            
+            # 시간 정보가 포함된 결과 생성
+            result = {
+                "input_data": water_levels,
+                "predictions": predictions,
+                "prediction_steps": prediction_steps,
+                "model_input_shape": list(input_data.shape),
+                "data_preprocessing": {
+                    "original_length": len(water_levels),
+                    "processed_length": len(water_array),
+                    "normalization_range": [float(data_min), float(data_max)],
+                    "auto_converted": True
+                }
+            }
+            
+            # 시간 기반 예측인 경우 추가 정보 제공
+            if time_horizon is not None:
+                result["time_horizon"] = time_horizon
+                result["time_based_prediction"] = True
+                
+                # 시간 정보에 따른 요약 메시지
+                if isinstance(time_horizon, dict):
+                    if 'minutes' in time_horizon:
+                        minutes = time_horizon['minutes']
+                        if len(predictions) == 1:
+                            result["prediction_summary"] = f"{minutes}분 후 예상 수위: {predictions[0]:.6f}"
+                        else:
+                            result["prediction_summary"] = f"향후 {minutes}분 동안의 예상 수위: {[round(p, 6) for p in predictions]}"
+                    elif 'hours' in time_horizon:
+                        hours = time_horizon['hours']
+                        if len(predictions) == 1:
+                            result["prediction_summary"] = f"{hours}시간 후 예상 수위: {predictions[0]:.6f}"
+                        else:
+                            result["prediction_summary"] = f"향후 {hours}시간 동안의 예상 수위: {[round(p, 6) for p in predictions]}"
+            elif prediction_hours is not None:
+                if isinstance(prediction_hours, dict) and 'value' in prediction_hours:
+                    hours = prediction_hours['value']
+                else:
+                    hours = prediction_hours
+                result["prediction_hours"] = hours
+                result["time_based_prediction"] = True
+                
+                # 예측 결과에 시간 정보 추가 (6자리 정밀도)
+                if len(predictions) == 1:
+                    result["prediction_summary"] = f"{hours}시간 후 예상 수위: {predictions[0]:.6f}"
+                else:
+                    result["prediction_summary"] = f"향후 {hours}시간 동안의 예상 수위: {[round(p, 6) for p in predictions]}"
+            
+            logger.info(f"수위 예측 완료: {predictions}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"수위 예측 오류: {str(e)}")
+            return {"error": f"수위 예측 중 오류가 발생했습니다: {str(e)}"}
+    
+    def get_model_info(self):
+        """모델 정보 반환"""
+        try:
+            if self.model is None:
+                return {"error": "모델이 로드되지 않았습니다."}
+            
+            return {
+                "model_path": self.model_path,
+                "input_shape": self.model.input_shape,
+                "output_shape": self.model.output_shape,
+                "total_params": self.model.count_params()
+            }
+        except Exception as e:
+            logger.error(f"모델 정보 조회 오류: {str(e)}")
+            return {"error": f"모델 정보 조회 중 오류가 발생했습니다: {str(e)}"}
+    
+    def _parse_time_from_query(self, query: str) -> dict:
+        """(호환용) 질의에서 시간 정보 파싱 - 공통 유틸 사용"""
+        return parse_time_info_from_text(query)
+    
+    def _enhance_prediction_with_analysis(self, result: dict, analysis_type: str, query: str = None) -> dict:
+        """분석 유형에 따른 예측 결과 개선"""
+        if not isinstance(result, dict) or 'predictions' not in result:
+            return result
+            
+        predictions = result['predictions']
+        input_data = result.get('input_data', [])
+        
+        try:
+            if analysis_type == 'trend':
+                # 트렌드 분석 추가
+                result['trend_analysis'] = self._analyze_prediction_trend(predictions, input_data)
+                
+            elif analysis_type == 'comparison':
+                # 비교 분석 추가 (입력 데이터와 예측 비교)
+                result['comparison_analysis'] = self._compare_prediction_with_input(predictions, input_data)
+                
+            elif analysis_type == 'alert':
+                # 경고 시점 분석
+                result['alert_analysis'] = self._analyze_alert_timing(predictions, input_data)
+                
+            # 공통 통계 추가
+            if len(predictions) > 1:
+                result['prediction_statistics'] = {
+                    'mean': np.mean(predictions),
+                    'std': np.std(predictions),
+                    'min': np.min(predictions),
+                    'max': np.max(predictions),
+                    'variance': np.var(predictions)
+                }
+                
+        except Exception as e:
+            logger.warning(f"예측 결과 분석 중 오류: {e}")
+            
+        return result
+    
+    def _analyze_prediction_trend(self, predictions: list, input_data: list) -> dict:
+        """예측 트렌드 분석"""
+        if len(predictions) < 2:
+            return {'trend': 'insufficient_data'}
+            
+        # 선형 회귀로 트렌드 계산
+        x = np.arange(len(predictions))
+        y = np.array(predictions)
+        
+        if len(x) > 1:
+            slope = np.polyfit(x, y, 1)[0]
+            
+            trend_desc = 'stable'
+            if slope > 0.1:
+                trend_desc = 'increasing'
+            elif slope < -0.1:
+                trend_desc = 'decreasing'
+                
+            return {
+                'trend': trend_desc,
+                'slope': float(slope),
+                'rate_of_change': float(slope * len(predictions)),
+                'trend_strength': abs(float(slope))
+            }
+            
+        return {'trend': 'unknown'}
+    
+    def _compare_prediction_with_input(self, predictions: list, input_data: list) -> dict:
+        """예측과 입력 데이터 비교"""
+        if not input_data or not predictions:
+            return {'comparison': 'insufficient_data'}
+            
+        input_mean = np.mean(input_data[-10:]) if len(input_data) >= 10 else np.mean(input_data)
+        pred_mean = np.mean(predictions)
+        
+        difference = pred_mean - input_mean
+        percent_change = (difference / input_mean) * 100 if input_mean != 0 else 0
+        
+        return {
+            'input_recent_mean': float(input_mean),
+            'prediction_mean': float(pred_mean),
+            'absolute_difference': float(difference),
+            'percent_change': float(percent_change),
+            'trend_direction': 'up' if difference > 0 else 'down' if difference < 0 else 'stable'
+        }
+    
+    def _analyze_alert_timing(self, predictions: list, input_data: list) -> dict:
+        """경고 시점 분석"""
+        if not predictions:
+            return {'alert': 'no_predictions'}
+            
+        # 간단한 임계값 기준 (실제로는 더 정교해야 함)
+        critical_low = 70.0  # 낮은 임계값
+        critical_high = 130.0  # 높은 임계값
+        
+        alerts = []
+        for i, pred in enumerate(predictions):
+            if pred <= critical_low:
+                alerts.append({
+                    'step': i + 1,
+                    'level': pred,
+                    'type': 'low_water_alert',
+                    'severity': 'high' if pred <= 60 else 'medium'
+                })
+            elif pred >= critical_high:
+                alerts.append({
+                    'step': i + 1,
+                    'level': pred,
+                    'type': 'high_water_alert',
+                    'severity': 'high' if pred >= 140 else 'medium'
+                })
+                
+        return {
+            'alerts': alerts,
+            'alert_count': len(alerts),
+            'first_alert_step': alerts[0]['step'] if alerts else None,
+            'critical_thresholds': {
+                'low': critical_low,
+                'high': critical_high
+            }
+        }
+    
+    def get_info(self) -> Dict[str, str]:
+        """도구 정보 반환"""
+        return {
+            "name": self.name,
+            "description": self.description
+        }

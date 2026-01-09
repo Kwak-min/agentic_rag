@@ -1,0 +1,29 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 시스템 패키지 설치
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    dos2unix \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 패키지 복사 및 설치
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Flask-SocketIO 추가 설치
+RUN pip install flask flask-cors flask-socketio python-socketio
+
+# 소스 코드 복사
+COPY . .
+
+# 스크립트 라인 엔딩 변환
+RUN find scripts -type f -name "*.sh" -exec dos2unix {} \;
+
+# 포트 노출
+EXPOSE 5000
+
+# 앱 실행
+CMD ["python", "flask_app.py"]
