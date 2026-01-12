@@ -2,7 +2,7 @@
 set -e
 
 echo "[backend] Waiting for database..."
-python - <<'PY'
+python3 - <<'PY'
 import os, time
 import psycopg2
 
@@ -25,6 +25,6 @@ else:
     print('[backend] DB readiness timed out')
 PY
 
-exec python flask_app.py
+exec python3 flask_app.py
 
 

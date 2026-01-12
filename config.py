@@ -591,6 +591,74 @@ def print_config() -> Dict[str, Any]:
     return config_info
 
 
+def reload_prompts_from_db(storage) -> bool:
+    """DB에서 프롬프트를 로드하여 전역 변수 업데이트
+
+    Args:
+        storage: PostgreSQL 스토리지 인스턴스
+
+    Returns:
+        bool: 성공 여부
+    """
+    global FUNCTION_SELECTION_PROMPT, RESPONSE_GENERATION_PROMPT
+
+    try:
+        if not storage:
+            return False
+
+        # DB에서 프롬프트 조회
+        query = "SELECT prompt_type, prompt_content FROM system_prompts"
+        results = storage.execute_query(query)
+
+        if not results:
+            return False
+
+        # 프롬프트 딕셔너리로 변환
+        prompts = {row[0]: row[1] for row in results}
+
+        # 전역 변수 업데이트
+        if 'function_selection' in prompts:
+            FUNCTION_SELECTION_PROMPT = prompts['function_selection']
+            logging.info("function_selection 프롬프트 업데이트 완료")
+
+        if 'response_generation' in prompts:
+            RESPONSE_GENERATION_PROMPT = prompts['response_generation']
+            logging.info("response_generation 프롬프트 업데이트 완료")
+
+        return True
+
+    except Exception as e:
+        logging.error(f"프롬프트 로드 오류: {e}")
+        return False
+
+
+def get_prompt_from_db(storage, prompt_type: str) -> Optional[str]:
+    """DB에서 특정 프롬프트를 조회
+
+    Args:
+        storage: PostgreSQL 스토리지 인스턴스
+        prompt_type: 프롬프트 타입 (function_selection, response_generation)
+
+    Returns:
+        Optional[str]: 프롬프트 내용 또는 None
+    """
+    try:
+        if not storage:
+            return None
+
+        query = "SELECT prompt_content FROM system_prompts WHERE prompt_type = %s"
+        results = storage.execute_query(query, (prompt_type,))
+
+        if results and len(results) > 0:
+            return results[0][0]
+
+        return None
+
+    except Exception as e:
+        logging.error(f"프롬프트 조회 오류: {e}")
+        return None
+
+
 
 
 

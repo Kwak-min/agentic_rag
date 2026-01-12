@@ -2,7 +2,7 @@
 set -e
 
 echo "[frontend] Waiting for database..."
-python - <<'PY'
+python3 - <<'PY'
 import os, time
 import psycopg2
 

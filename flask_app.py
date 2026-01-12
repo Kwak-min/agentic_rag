@@ -37,7 +37,7 @@ app = Flask(__name__)
 
 # JWT 설정
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'super-secret-key-change-in-production')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=12)
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=3)  # 3시간으로 변경
 
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -45,8 +45,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # JWT 초기화
 jwt = JWTManager(app)
 
-# 인증 관리자 초기화
-auth_manager = get_auth_manager()
+# 인증 관리자는 시스템 초기화 시 storage와 함께 초기화
+auth_manager = None
 
 # 전역 변수
 lm_client: Optional[LMStudioClient] = None
@@ -58,41 +58,47 @@ system_initialized = False
 
 def initialize_system():
     """시스템 초기화"""
-    global lm_client, orchestrator, autonomous_agent, storage, system_initialized
+    global lm_client, orchestrator, autonomous_agent, storage, system_initialized, auth_manager
 
     try:
         logger.info("=== Flask 백엔드 시스템 초기화 시작 ===")
 
         # AI 클라이언트 초기화 (Ollama 또는 LM Studio)
         if USE_OLLAMA:
-            logger.info("1/5: Ollama 클라이언트 초기화 중...")
+            logger.info("1/6: Ollama 클라이언트 초기화 중...")
             lm_client = OllamaClient(base_url=OLLAMA_BASE_URL, model_name=OLLAMA_MODEL_NAME)
-            logger.info(f"1/5: Ollama 클라이언트 초기화 완료 (모델: {OLLAMA_MODEL_NAME})")
+            logger.info(f"1/6: Ollama 클라이언트 초기화 완료 (모델: {OLLAMA_MODEL_NAME})")
         else:
-            logger.info("1/5: LM Studio 클라이언트 초기화 중...")
+            logger.info("1/6: LM Studio 클라이언트 초기화 중...")
             lm_client = LMStudioClient()
-            logger.info("1/5: LM Studio 클라이언트 초기화 완료")
+            logger.info("1/6: LM Studio 클라이언트 초기화 완료")
 
         # PostgreSQLStorage 초기화 (오케스트레이터보다 먼저)
-        logger.info("2/5: PostgreSQL 스토리지 초기화 중...")
+        logger.info("2/6: PostgreSQL 스토리지 초기화 중...")
         storage = PostgreSQLStorage.get_instance()
-        logger.info("2/5: PostgreSQL 스토리지 초기화 완료")
+        logger.info("2/6: PostgreSQL 스토리지 초기화 완료")
+
+        # Auth Manager 초기화 (storage 필요)
+        logger.info("3/6: 인증 관리자 초기화 중...")
+        from auth.auth_manager import AuthManager
+        auth_manager = AuthManager(storage=storage)
+        logger.info("3/6: 인증 관리자 초기화 완료")
 
         # 오케스트레이터 초기화 (storage 전달)
-        logger.info("3/5: 오케스트레이터 초기화 중...")
+        logger.info("4/6: 오케스트레이터 초기화 중...")
         orchestrator = Orchestrator(lm_client, storage=storage)
-        logger.info("3/5: 오케스트레이터 초기화 완료")
+        logger.info("4/6: 오케스트레이터 초기화 완료")
 
         # 자율 에이전트 초기화 (나중에 처리)
-        logger.info("4/5: 자율 에이전트 초기화 스킵 (나중에 초기화)")
+        logger.info("5/6: 자율 에이전트 초기화 스킵 (나중에 초기화)")
         autonomous_agent = None
 
         # 글로벌 상태 업데이트
-        logger.info("5/5: 상태 관리 초기화 중...")
+        logger.info("6/6: 상태 관리 초기화 중...")
         try:
             state_manager = get_state_manager()
             state_manager.update_system_status(True, True)
-            logger.info("5/5: 상태 관리 초기화 완료")
+            logger.info("6/6: 상태 관리 초기화 완료")
         except Exception as e:
             logger.warning(f"상태 관리 초기화 실패 (계속 진행): {e}")
 
@@ -625,6 +631,134 @@ def parse_kakao_log():
         logger.error(f"카톡 파싱 오류: {e}", exc_info=True)
         if storage and storage._connection:
             storage._connection.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# 시스템 프롬프트 관리 API
+# ============================================
+
+@app.route('/api/prompts', methods=['GET'])
+@jwt_required()
+def get_prompts():
+    """시스템 프롬프트 조회 (관리자만)"""
+    try:
+        # 사용자 권한 확인
+        username = get_jwt_identity()
+        user = auth_manager.get_user_info(username)
+
+        if not user or user.get('role') != 'admin':
+            return jsonify({"error": "관리자 권한이 필요합니다"}), 403
+
+        if not storage:
+            return jsonify({"error": "Storage가 초기화되지 않았습니다"}), 500
+
+        # DB에서 전체 프롬프트 조회
+        query = """
+            SELECT id, prompt_type, prompt_content, description, updated_by, updated_at
+            FROM system_prompts
+            ORDER BY prompt_type
+        """
+        results = storage.execute_query(query)
+
+        prompts = []
+        for row in results:
+            prompts.append({
+                "id": row[0],
+                "prompt_type": row[1],
+                "prompt_content": row[2],
+                "description": row[3],
+                "updated_by": row[4],
+                "updated_at": row[5].isoformat() if row[5] else None
+            })
+
+        return jsonify({
+            "success": True,
+            "prompts": prompts,
+            "count": len(prompts)
+        })
+
+    except Exception as e:
+        logger.error(f"프롬프트 조회 오류: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/prompts/<prompt_type>', methods=['PUT'])
+@jwt_required()
+def update_prompt(prompt_type):
+    """시스템 프롬프트 수정 (관리자만)"""
+    try:
+        # 사용자 권한 확인
+        username = get_jwt_identity()
+        user = auth_manager.get_user_info(username)
+
+        if not user or user.get('role') != 'admin':
+            return jsonify({"error": "관리자 권한이 필요합니다"}), 403
+
+        if not storage:
+            return jsonify({"error": "Storage가 초기화되지 않았습니다"}), 500
+
+        data = request.json
+        prompt_content = data.get('prompt_content')
+
+        if not prompt_content:
+            return jsonify({"error": "prompt_content가 필요합니다"}), 400
+
+        # DB 업데이트
+        query = """
+            UPDATE system_prompts
+            SET prompt_content = %s, updated_by = %s, updated_at = NOW()
+            WHERE prompt_type = %s
+        """
+        storage.execute_query(query, (prompt_content, username, prompt_type), commit=True)
+
+        logger.info(f"프롬프트 업데이트: {prompt_type} by {username}")
+
+        return jsonify({
+            "success": True,
+            "message": f"프롬프트 '{prompt_type}'가 성공적으로 업데이트되었습니다"
+        })
+
+    except Exception as e:
+        logger.error(f"프롬프트 업데이트 오류: {e}", exc_info=True)
+        if storage and storage._connection:
+            storage._connection.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/prompts/reload', methods=['POST'])
+@jwt_required()
+def reload_prompts():
+    """DB에서 프롬프트를 다시 로드하여 시스템에 적용 (관리자만)"""
+    try:
+        # 사용자 권한 확인
+        username = get_jwt_identity()
+        user = auth_manager.get_user_info(username)
+
+        if not user or user.get('role') != 'admin':
+            return jsonify({"error": "관리자 권한이 필요합니다"}), 403
+
+        if not storage:
+            return jsonify({"error": "Storage가 초기화되지 않았습니다"}), 500
+
+        # Config 모듈에서 프롬프트 재로드 함수 호출
+        from config import reload_prompts_from_db
+        success = reload_prompts_from_db(storage)
+
+        if success:
+            logger.info(f"프롬프트 재로드 성공 by {username}")
+            return jsonify({
+                "success": True,
+                "message": "시스템 프롬프트가 성공적으로 재로드되었습니다"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "프롬프트 재로드 실패"
+            }), 500
+
+    except Exception as e:
+        logger.error(f"프롬프트 재로드 오류: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
