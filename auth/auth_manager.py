@@ -36,14 +36,24 @@ class AuthManager:
 
             # DB에서 사용자 조회
             query = "SELECT id, username, password_hash, role, name FROM users WHERE username = %s"
-            results = self.storage.execute_query(query, (username,))
+            results = self.storage.execute_query(query, (username,), fetchall=True)
 
             if not results or len(results) == 0:
                 logger.warning(f"존재하지 않는 사용자: {username}")
                 return None
 
             user = results[0]
-            user_id, username_db, password_hash, role, name = user
+            # RealDictRow 또는 튜플 모두 지원
+            if hasattr(user, 'keys'):
+                # 딕셔너리 형태
+                user_id = user['id']
+                username_db = user['username']
+                password_hash = user['password_hash']
+                role = user['role']
+                name = user['name']
+            else:
+                # 튜플 형태
+                user_id, username_db, password_hash, role, name = user
 
             # 비밀번호 검증
             if bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8')):
@@ -145,16 +155,25 @@ class AuthManager:
 
             # DB에서 사용자 조회
             query = "SELECT id, username, role, name FROM users WHERE username = %s"
-            results = self.storage.execute_query(query, (username,))
+            results = self.storage.execute_query(query, (username,), fetchall=True)
 
             if results and len(results) > 0:
                 user = results[0]
-                return {
-                    "id": user[0],
-                    "username": user[1],
-                    "role": user[2],
-                    "name": user[3]
-                }
+                # RealDictRow 또는 튜플 모두 지원
+                if hasattr(user, 'keys'):
+                    return {
+                        "id": user['id'],
+                        "username": user['username'],
+                        "role": user['role'],
+                        "name": user['name']
+                    }
+                else:
+                    return {
+                        "id": user[0],
+                        "username": user[1],
+                        "role": user[2],
+                        "name": user[3]
+                    }
             return None
 
         except Exception as e:

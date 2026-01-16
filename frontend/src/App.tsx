@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import InspectionPage from './pages/InspectionPage';
 import PromptsPage from './pages/PromptsPage';
+import AnomalyMonitoringPage from './pages/AnomalyMonitoringPage';
 
 // 추후 구현할 페이지들 (임시 컴포넌트)
 const ChatPage = () => <div className="p-6"><h1 className="text-3xl font-bold">AI 챗봇</h1></div>;
@@ -35,6 +36,7 @@ function App() {
             <Route path="chat" element={<ChatPage />} />
             <Route path="water" element={<WaterPage />} />
             <Route path="inspection" element={<InspectionPage />} />
+            <Route path="anomaly" element={<AnomalyMonitoringPage />} />
 
             {/* 관리자 전용 라우트 */}
             <Route

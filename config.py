@@ -36,6 +36,11 @@ USE_OLLAMA = os.getenv("USE_OLLAMA", "true").lower() == "true"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "qwen2.5:7b")
 
+# 파인튜닝 모델 설정
+USE_FINETUNED_MODEL = os.getenv("USE_FINETUNED_MODEL", "false").lower() == "true"
+FINETUNED_BASE_MODEL = os.getenv("FINETUNED_BASE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+FINETUNED_ADAPTER_PATH = os.getenv("FINETUNED_ADAPTER_PATH", "./Finetuning/final_model")
+
 # 온도(temperature) 설정
 TOOL_SELECTION_TEMPERATURE = float(os.getenv("TOOL_SELECTION_TEMPERATURE", str(DEFAULT_TOOL_SELECTION_TEMP)))
 RESPONSE_TEMPERATURE = float(os.getenv("RESPONSE_TEMPERATURE", str(DEFAULT_RESPONSE_TEMP)))

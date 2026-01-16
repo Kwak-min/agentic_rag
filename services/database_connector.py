@@ -64,35 +64,91 @@ class DatabaseConnector:
             if use_cache and self._cached_data and self._last_update:
                 if datetime.now() - self._last_update < timedelta(seconds=10):
                     return self._cached_data
-            
+
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     # 최신 데이터 조회
                     cur.execute("""
-                        SELECT * FROM water 
-                        ORDER BY measured_at DESC 
+                        SELECT * FROM water
+                        ORDER BY measured_at DESC
                         LIMIT 1;
                     """)
-                    
+
                     result = cur.fetchone()
-                    
+
                     if not result:
                         logger.warning("water 테이블에 데이터가 없습니다")
                         return None
-                    
+
                     # 데이터 변환
                     water_data = self._convert_to_reservoir_format(result)
-                    
+
                     # 캐시 업데이트
                     with self._lock:
                         self._cached_data = water_data
                         self._last_update = datetime.now()
-                    
+
                     return water_data
-                    
+
         except Exception as e:
             logger.error(f"수위 데이터 조회 오류: {e}")
             return None
+
+    def fetch_recent_water_data(self, reservoir: str, limit: int = 60) -> list:
+        """특정 배수지의 최근 데이터 조회
+
+        Args:
+            reservoir: 배수지 키 (gagok, haeryong, sangsa)
+            limit: 조회할 데이터 개수
+
+        Returns:
+            최근 데이터 리스트 (오래된 것부터)
+        """
+        try:
+            reservoir_config = self.reservoirs.get(reservoir)
+            if not reservoir_config:
+                logger.error(f"알 수 없는 배수지: {reservoir}")
+                return []
+
+            level_col = reservoir_config['level_col']
+            pump_a_col = reservoir_config.get('pump_a_col', f'{reservoir}_pump_a')
+            pump_b_col = reservoir_config.get('pump_b_col', f'{reservoir}_pump_b')
+
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # 최근 N개 데이터 조회 (오래된 것부터 정렬)
+                    query = f"""
+                        SELECT
+                            measured_at,
+                            {level_col} as water_level,
+                            {pump_a_col} as pump_a,
+                            {pump_b_col} as pump_b
+                        FROM water
+                        ORDER BY measured_at DESC
+                        LIMIT %s;
+                    """
+
+                    cur.execute(query, (limit,))
+                    results = cur.fetchall()
+
+                    # 오래된 것부터 정렬 (시계열 순서)
+                    results.reverse()
+
+                    # 딕셔너리 리스트로 변환
+                    data_list = []
+                    for row in results:
+                        data_list.append({
+                            'measured_at': row['measured_at'],
+                            'water_level': float(row['water_level']) if row['water_level'] else 0.0,
+                            'pump_a': int(row['pump_a']) if row['pump_a'] else 0,
+                            'pump_b': int(row['pump_b']) if row['pump_b'] else 0
+                        })
+
+                    return data_list
+
+        except Exception as e:
+            logger.error(f"{reservoir} 데이터 조회 오류: {e}", exc_info=True)
+            return []
     
     def _convert_to_reservoir_format(self, db_result: Dict[str, Any]) -> Dict[str, Any]:
         """데이터베이스 결과를 배수지 형식으로 변환"""

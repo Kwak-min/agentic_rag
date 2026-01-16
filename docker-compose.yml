@@ -38,14 +38,11 @@ services:
       FLASK_PORT: 5000
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL_NAME: qwen2.5:7b
-      USE_OLLAMA: ${USE_OLLAMA:-true}
-      USE_FINETUNED_MODEL: ${USE_FINETUNED_MODEL:-false}
       SKIP_EMBEDDING_LOAD: true
     ports:
       - "5000:5000"
     volumes:
       - ./:/app
-      - model_data:/app/rnn_lstm_model
     command: ["/bin/sh", "scripts/entrypoint-flask.sh"]
     networks:
       - synergy-network
@@ -69,64 +66,8 @@ services:
       - synergy-network
     restart: unless-stopped
 
-  # RNN-LSTM 모델 학습 서비스
-  rnn-lstm-trainer:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: synergy-rnn-lstm-trainer
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      PG_DB_HOST: postgres
-      PG_DB_PORT: 5432
-      PYTHONUNBUFFERED: 1
-    volumes:
-      - ./:/app
-      - model_data:/app/rnn_lstm_model
-    command: ["python", "scripts/train_rnn_lstm_hybrid.py"]
-    networks:
-      - synergy-network
-    profiles:
-      - training
-    labels:
-      - "synergy.service=rnn-lstm-trainer"
-      - "synergy.type=ml-training"
-
-  # RNN-LSTM 이상 탐지 테스트 서비스
-  anomaly-detector:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: synergy-anomaly-detector
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      PG_DB_HOST: postgres
-      PG_DB_PORT: 5432
-      PYTHONUNBUFFERED: 1
-    volumes:
-      - ./:/app
-      - model_data:/app/rnn_lstm_model
-    networks:
-      - synergy-network
-    profiles:
-      - testing
-    stdin_open: true
-    tty: true
-    labels:
-      - "synergy.service=anomaly-detector"
-      - "synergy.type=ml-testing"
-
 volumes:
   pgdata:
-  model_data:
 
 networks:
   synergy-network:

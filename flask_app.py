@@ -22,12 +22,16 @@ from flask_jwt_extended import (
 )
 from models.lm_studio import LMStudioClient
 from models.ollama_client import OllamaClient
+from models.finetuned_model_client import FinetunedModelClient
 from core.orchestrator import Orchestrator
 from services.autonomous_agent import AutonomousAgent
 from storage.postgresql_storage import PostgreSQLStorage
 from utils.logger import setup_logger
 from utils.state_manager import get_state_manager
-from config import print_config, USE_OLLAMA, OLLAMA_BASE_URL, OLLAMA_MODEL_NAME
+from config import (
+    print_config, USE_OLLAMA, OLLAMA_BASE_URL, OLLAMA_MODEL_NAME,
+    USE_FINETUNED_MODEL, FINETUNED_BASE_MODEL, FINETUNED_ADAPTER_PATH
+)
 from auth import get_auth_manager
 
 logger = setup_logger(__name__)
@@ -54,6 +58,7 @@ orchestrator: Optional[Orchestrator] = None
 autonomous_agent: Optional[AutonomousAgent] = None
 storage: Optional[PostgreSQLStorage] = None
 system_initialized = False
+anomaly_monitor = None  # 실시간 이상 탐지 모니터
 
 
 def initialize_system():
@@ -63,8 +68,21 @@ def initialize_system():
     try:
         logger.info("=== Flask 백엔드 시스템 초기화 시작 ===")
 
-        # AI 클라이언트 초기화 (Ollama 또는 LM Studio)
-        if USE_OLLAMA:
+        # AI 클라이언트 초기화 (파인튜닝 모델, Ollama, 또는 LM Studio)
+        if USE_FINETUNED_MODEL:
+            logger.info("1/6: 파인튜닝 모델 클라이언트 초기화 중...")
+            try:
+                lm_client = FinetunedModelClient(
+                    base_model_name=FINETUNED_BASE_MODEL,
+                    adapter_path=FINETUNED_ADAPTER_PATH
+                )
+                logger.info(f"1/6: 파인튜닝 모델 클라이언트 초기화 완료")
+            except Exception as e:
+                logger.error(f"파인튜닝 모델 로드 실패: {str(e)}")
+                logger.warning("Ollama로 폴백합니다...")
+                lm_client = OllamaClient(base_url=OLLAMA_BASE_URL, model_name=OLLAMA_MODEL_NAME)
+                logger.info(f"1/6: Ollama 클라이언트로 폴백 완료 (모델: {OLLAMA_MODEL_NAME})")
+        elif USE_OLLAMA:
             logger.info("1/6: Ollama 클라이언트 초기화 중...")
             lm_client = OllamaClient(base_url=OLLAMA_BASE_URL, model_name=OLLAMA_MODEL_NAME)
             logger.info(f"1/6: Ollama 클라이언트 초기화 완료 (모델: {OLLAMA_MODEL_NAME})")
@@ -873,12 +891,81 @@ def handle_water_subscribe():
 
 
 # ============================================
+# API Blueprint 등록
+# ============================================
+
+# 이상 탐지 API 등록
+try:
+    from api.anomaly_routes import anomaly_bp
+    app.register_blueprint(anomaly_bp)
+    logger.info("✅ 이상 탐지 API 라우트 등록 완료")
+except Exception as e:
+    logger.error(f"이상 탐지 API 등록 실패: {e}")
+
+
+# ============================================
+# 실시간 이상 탐지 모니터링
+# ============================================
+
+def on_anomaly_detected(anomaly_data: Dict[str, Any]):
+    """이상 탐지 시 웹소켓으로 알림 전송"""
+    try:
+        logger.info(f"이상 탐지 알림: {anomaly_data.get('reservoir')} - {anomaly_data.get('status')}")
+
+        # 웹소켓으로 브로드캐스트
+        socketio.emit('anomaly_alert', anomaly_data, broadcast=True)
+
+    except Exception as e:
+        logger.error(f"이상 탐지 알림 전송 오류: {e}", exc_info=True)
+
+
+def start_anomaly_monitoring():
+    """이상 탐지 모니터링 시작"""
+    global anomaly_monitor
+
+    try:
+        from services.realtime_anomaly_monitor import RealtimeAnomalyMonitor
+
+        # 모니터 초기화 (60초마다 체크)
+        anomaly_monitor = RealtimeAnomalyMonitor(
+            check_interval=60,
+            on_anomaly_detected=on_anomaly_detected
+        )
+
+        # 모니터링 시작
+        anomaly_monitor.start()
+
+        logger.info("✅ 실시간 이상 탐지 모니터링 시작됨")
+
+    except Exception as e:
+        logger.error(f"이상 탐지 모니터링 시작 실패: {e}", exc_info=True)
+
+
+# 웹소켓 이벤트: 이상 탐지 상태 조회
+@socketio.on('get_anomaly_status')
+def handle_get_anomaly_status():
+    """현재 이상 탐지 상태 조회"""
+    try:
+        if anomaly_monitor:
+            status = anomaly_monitor.get_current_status()
+            emit('anomaly_status', status)
+        else:
+            emit('anomaly_status', {"error": "모니터링이 실행되지 않았습니다"})
+    except Exception as e:
+        logger.error(f"상태 조회 오류: {e}")
+        emit('anomaly_status', {"error": str(e)})
+
+
+# ============================================
 # 앱 시작
 # ============================================
 
 if __name__ == '__main__':
     # 시스템 초기화
     initialize_system()
+
+    # 실시간 이상 탐지 모니터링 시작
+    start_anomaly_monitoring()
 
     # Flask-SocketIO 서버 실행
     port = int(os.getenv('FLASK_PORT', 5000))

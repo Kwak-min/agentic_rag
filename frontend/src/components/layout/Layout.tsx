@@ -11,6 +11,7 @@ import {
   Menu,
   X,
   FileText,
+  AlertCircle,
 } from 'lucide-react';
 
 const Layout: React.FC = () => {
@@ -29,6 +30,7 @@ const Layout: React.FC = () => {
     { path: '/chat', icon: MessageSquare, label: 'AI 챗봇' },
     { path: '/water', icon: Droplet, label: '수위 모니터링' },
     { path: '/inspection', icon: ClipboardList, label: '점검 로그' },
+    { path: '/anomaly', icon: AlertCircle, label: 'RNN-LSTM 이상 탐지' },
     ...(isAdmin ? [{ path: '/prompts', icon: FileText, label: '프롬프트 관리' }] : []),
     ...(isAdmin ? [{ path: '/settings', icon: Settings, label: '설정' }] : []),
   ];

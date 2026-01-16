@@ -18,6 +18,8 @@ const Layout = () => {
     { path: '/dashboard', label: '대시보드', icon: '📊' },
     { path: '/chat', label: 'AI 챗봇', icon: '💬' },
     { path: '/inspection', label: '점검 로그', icon: '📝' },
+    { path: '/anomaly', label: '이상 탐지 모니터링', icon: '🚨' },
+    { path: '/anomaly/test', label: '이상 탐지 테스트', icon: '🧪' },
   ];
 
   if (isAdmin()) {
