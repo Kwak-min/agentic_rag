@@ -337,7 +337,7 @@ def list_files():
         return jsonify({"error": "스토리지가 초기화되지 않았습니다"}), 400
 
     try:
-        files = storage.list_documents()
+        files = storage.list_files()
         return jsonify({"files": files})
 
     except Exception as e:
@@ -677,18 +677,30 @@ def get_prompts():
             FROM system_prompts
             ORDER BY prompt_type
         """
-        results = storage.execute_query(query)
+        results = storage.execute_query(query, fetchall=True)
 
         prompts = []
-        for row in results:
-            prompts.append({
-                "id": row[0],
-                "prompt_type": row[1],
-                "prompt_content": row[2],
-                "description": row[3],
-                "updated_by": row[4],
-                "updated_at": row[5].isoformat() if row[5] else None
-            })
+        if results:
+            for row in results:
+                # RealDictRow 또는 튜플 모두 지원
+                if hasattr(row, 'keys'):
+                    prompts.append({
+                        "id": row['id'],
+                        "prompt_type": row['prompt_type'],
+                        "prompt_content": row['prompt_content'],
+                        "description": row['description'],
+                        "updated_by": row['updated_by'],
+                        "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
+                    })
+                else:
+                    prompts.append({
+                        "id": row[0],
+                        "prompt_type": row[1],
+                        "prompt_content": row[2],
+                        "description": row[3],
+                        "updated_by": row[4],
+                        "updated_at": row[5].isoformat() if row[5] else None
+                    })
 
         return jsonify({
             "success": True,

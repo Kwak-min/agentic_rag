@@ -2,16 +2,17 @@
 
 import os
 import json
+import logging as python_logging
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
-from langchain_teddynote import logging
+from langchain_teddynote import logging as langchain_logging
 from utils.exceptions import ConfigurationError
 
 # .env 파일 로드
 load_dotenv()
 
 # 프로젝트 이름을 입력합니다.
-logging.langsmith("AgenticRAG")
+langchain_logging.langsmith("AgenticRAG")
 
 # 시스템 상수
 DEFAULT_CHUNK_SIZE = 1000
@@ -84,7 +85,7 @@ def _get_int_env(key: str, default: str) -> int:
         value = os.getenv(key, default)
         return int(value)
     except ValueError as e:
-        logging.warning(f"잘못된 환경변수 값 {key}={os.getenv(key)}, 기본값 {default} 사용")
+        python_logging.warning(f"잘못된 환경변수 값 {key}={os.getenv(key)}, 기본값 {default} 사용")
         try:
             return int(default)
         except ValueError:
@@ -98,7 +99,7 @@ TIMEOUT = _get_int_env("TIMEOUT", str(DEFAULT_TIMEOUT))
 
 DATABASE_NAME = os.getenv("DATABASE_NAME", "document")
 
-ENABLED_TOOLS = [tool.strip() for tool in os.getenv("ENABLED_TOOLS", "vector_search_tool,list_files_tool,prediction_tool,arduino_water_sensor,water_level_monitoring_tool,real_time_database_control_tool,advanced_water_analysis_tool,automation_control_tool,inspection_log_tool").split(",") if tool.strip()]
+ENABLED_TOOLS = [tool.strip() for tool in os.getenv("ENABLED_TOOLS", "vector_search_tool,list_files_tool,prediction_tool,arduino_water_sensor,water_level_monitoring_tool,real_time_database_control_tool,advanced_water_analysis_tool,automation_control_tool,inspection_log_tool,search_inspection_logs").split(",") if tool.strip()]
 
 # PostgreSQL configuration
 PG_DB_HOST = os.getenv("PG_DB_HOST", "localhost")
@@ -124,7 +125,7 @@ def validate_config() -> bool:
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars:
-        logging.warning(f"필수 환경변수가 설정되지 않음: {missing_vars}")
+        python_logging.warning(f"필수 환경변수가 설정되지 않음: {missing_vars}")
 
     # PostgreSQL 포트 검증
     if not (MIN_PORT <= PG_DB_PORT <= MAX_PORT):
@@ -613,27 +614,32 @@ def reload_prompts_from_db(storage) -> bool:
 
         # DB에서 프롬프트 조회
         query = "SELECT prompt_type, prompt_content FROM system_prompts"
-        results = storage.execute_query(query)
+        results = storage.execute_query(query, fetchall=True)
 
         if not results:
             return False
 
-        # 프롬프트 딕셔너리로 변환
-        prompts = {row[0]: row[1] for row in results}
+        # 프롬프트 딕셔너리로 변환 (RealDictRow 또는 튜플 모두 지원)
+        prompts = {}
+        for row in results:
+            if hasattr(row, 'keys'):
+                prompts[row['prompt_type']] = row['prompt_content']
+            else:
+                prompts[row[0]] = row[1]
 
         # 전역 변수 업데이트
         if 'function_selection' in prompts:
             FUNCTION_SELECTION_PROMPT = prompts['function_selection']
-            logging.info("function_selection 프롬프트 업데이트 완료")
+            python_logging.info("function_selection 프롬프트 업데이트 완료")
 
         if 'response_generation' in prompts:
             RESPONSE_GENERATION_PROMPT = prompts['response_generation']
-            logging.info("response_generation 프롬프트 업데이트 완료")
+            python_logging.info("response_generation 프롬프트 업데이트 완료")
 
         return True
 
     except Exception as e:
-        logging.error(f"프롬프트 로드 오류: {e}")
+        python_logging.error(f"프롬프트 로드 오류: {e}")
         return False
 
 
@@ -652,15 +658,19 @@ def get_prompt_from_db(storage, prompt_type: str) -> Optional[str]:
             return None
 
         query = "SELECT prompt_content FROM system_prompts WHERE prompt_type = %s"
-        results = storage.execute_query(query, (prompt_type,))
+        results = storage.execute_query(query, (prompt_type,), fetchall=True)
 
         if results and len(results) > 0:
-            return results[0][0]
+            row = results[0]
+            if hasattr(row, 'keys'):
+                return row['prompt_content']
+            else:
+                return row[0]
 
         return None
 
     except Exception as e:
-        logging.error(f"프롬프트 조회 오류: {e}")
+        python_logging.error(f"프롬프트 조회 오류: {e}")
         return None
 
 

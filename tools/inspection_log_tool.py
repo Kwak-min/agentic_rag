@@ -60,7 +60,9 @@ class InspectionLogTool:
         issue_location: Optional[str] = None,
         days: int = 30,
         limit: int = 10,
-        execution_context: Optional[Dict[str, Any]] = None
+        execution_context: Optional[Dict[str, Any]] = None,
+        query: Optional[str] = None,  # orchestrator에서 전달되는 쿼리 (무시)
+        **kwargs  # 기타 인자 무시
     ) -> List[Dict[str, Any]]:
         """점검 로그 검색 실행
 

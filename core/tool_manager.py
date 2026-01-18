@@ -51,6 +51,7 @@ class ToolManager:
             "arduino_water_sensor": ArduinoWaterSensorTool,
             "smart_water_prediction": SmartWaterPredictionTool,
             "inspection_log_tool": InspectionLogTool,
+            "search_inspection_logs": InspectionLogTool,  # config.py 함수명과 매칭
         }
 
         # 함수형 도구
@@ -66,7 +67,7 @@ class ToolManager:
             if tool_name in ENABLED_TOOLS:
                 try:
                     # InspectionLogTool은 storage 필요
-                    if tool_name == "inspection_log_tool" and self.storage:
+                    if tool_name in ("inspection_log_tool", "search_inspection_logs") and self.storage:
                         self.tools[tool_name] = tool_class(self.storage)
                     else:
                         self.tools[tool_name] = tool_class()

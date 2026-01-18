@@ -1,7 +1,7 @@
 // pages/AnomalyTest.js - 이상 탐지 테스트 인터페이스
 
 import React, { useState } from 'react';
-import axios from 'axios';
+import api from '../services/api';
 import './AnomalyTest.css';
 
 const AnomalyTest = () => {
@@ -102,7 +102,7 @@ const AnomalyTest = () => {
         : null;
 
       // API 요청
-      const response = await axios.post('/api/anomaly/detect', {
+      const response = await api.post('/api/anomaly/detect', {
         water_levels: waterLevelsArray,
         pump_a: testData.pumpA,
         pump_b: testData.pumpB,
